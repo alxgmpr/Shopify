@@ -1,0 +1,26 @@
+{
+  "site": "https://kith.com",
+  "proxy": null,
+  "poll_time": 5,
+  "product": {
+    "preset_url": "",
+    "preset_var": "",
+    "positive_kw": "",
+    "negative_kw": ""
+  },
+  "checkout": {
+    "fname": "Alex",
+    "lname": "Gompper",
+    "email": "agompper@me.com",
+    "phone": "5738644512",
+    "addr1": "1900 Field Stone Ct",
+    "addr2": "Unit 1",
+    "city": "Columbia",
+    "state": "Missouri",
+    "zip": "65201",
+    "cc": "4859106927568575",
+    "exp_m": "07",
+    "exp_y": "2021",
+    "cvv": "900"
+  }
+}
