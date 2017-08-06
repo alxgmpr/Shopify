@@ -62,6 +62,15 @@ class Shopify(threading.Thread):
             return True
         return False
 
+    def is_in_queue(self, url):
+        # returns true if checkout is in queue, otherwise false
+        while 'queue' in url:
+            log(self.tid, 'in queue...')
+            self.S.get(url, headers=headers)
+            sleep(1)
+        return True
+
+
     def get_auth_token(self, source):
         # scrapes a fresh auth token from page source
         self.auth_token = re.findall('name="authenticity_token" value="(.*?)"', source)[2]
@@ -349,12 +358,20 @@ class Shopify(threading.Thread):
         product_variants = self.get_product_info(product_match)
         selected_variant = self.check_variants(product_variants)
         while selected_variant is None:
+            # if a match isnt found, have the user select the size manually
             log(self.tid, 'couldnt match variant against selected size, please pick numerically\n')
             i = 0
             for v in product_variants:
-                print '{} :: {}'.format(i, v.title)
+                print '#{} - {}'.format(i, v.size)
                 i += 1
-            exit(-1)
+            x = raw_input('please enter a product index #\n> ')
+            try:
+                if 0 < int(x) < len(product_variants):
+                    selected_variant = product_variants[int(x)]
+                else:
+                    log(self.tid, 'error selection {} not in range'.format(x))
+            except ValueError:
+                log(self.tid, 'error please enter a number')
         checkout_url = self.add_to_cart(selected_variant)
         checkout_url = self.open_checkout(checkout_url)
         checkout_url = self.submit_customer_info(checkout_url)
