@@ -19,9 +19,11 @@ class Shopify(threading.Thread):
         threading.Thread.__init__(self)
         with open(config_filename) as config:
             self.c = json.load(config)
-        self.tid = tid
-        self.auth_token = ''
-        self.ship_data = None  # preset shipping info data. leave None if you want to scrape the first method instead
+        self.tid = tid  # Thread id number
+        self.auth_token = ''  # Stores the current auth token. Should be re-scraped after every step of checkout
+        self.ship_data = None  # You can preset some of these values to maybe save 0.5 seconds during checkout
+        self.total_cost = None
+        self.gateway_id = None
         self.S = requests.Session()
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -45,11 +47,13 @@ class Shopify(threading.Thread):
             'Upgrade-Insecure-Requests': '1',
             'DNT': '1'
         }
-        log(self.tid, 'shopify ATC by Alex++ @edzart/@573supreme')
+        log(self.tid, 'shopify ATC by Alex++ @edzart/@573supreme')  # gang gang
 
     def refresh_poll(self):
+        # sleeps a set amount of time. see config
         log(self.tid, 'waiting {} second(s) before refreshing'.format(self.c['poll_time']))
         sleep(self.c['poll_time'])
+        return
 
     def is_sold_out(self, url):
         # returns true if sold out, otherwise returns false
@@ -59,8 +63,32 @@ class Shopify(threading.Thread):
         return False
 
     def get_auth_token(self, source):
+        # scrapes a fresh auth token from page source
         self.auth_token = re.findall('name="authenticity_token" value="(.*?)"', source)[2]
         log(self.tid, 'got new auth token {}'.format(self.auth_token))
+        return
+
+    def get_total_cost(self, source):
+        log(self.tid, 'getting order total')
+        self.total_cost = re.findall('data-checkout-payment-due-target="(.*?)"', source)[0]
+        log(self.tid, 'found order total {}'.format(self.total_cost))
+        return
+
+    def get_gateway_id(self, source):
+        log(self.tid, 'getting payment gateway id')
+        self.gateway_id = re.findall('data-brand-icons-for-gateway="(.*?)"', source)
+        log(self.tid, 'found payment gateway id {}'.format(self.gateway_id))
+        return
+
+    def get_shipping_info(self, checkout_url):
+        log(self.tid, 'gathering shipping info')
+        r = self.S.get(
+            checkout_url,
+            headers=self.headers
+        )
+        r.raise_for_status()
+        self.ship_data = re.findall('data-backup="(.*?)"', r.text)[0]
+        log(self.tid, 'found shipping method {}'.format(self.ship_data))
         return
 
     def get_products(self):
@@ -137,7 +165,7 @@ class Shopify(threading.Thread):
         return None
 
     def add_to_cart(self, variant):
-        # adds a selected variant object to cart and returns the checkout url
+        # adds a selected variant object to cart and returns the new checkout url
         log(self.tid, 'adding variant to cart')
         if variant is None:
             raise Exception('cant add empty variant to cart')
@@ -163,6 +191,7 @@ class Shopify(threading.Thread):
         return r.text.split('"')[1]
 
     def open_checkout(self, checkout_url):
+        # opens the checkout url to scrape auth token and check for sold out
         log(self.tid, 'opening checkout page {}'.format(checkout_url))
         r = self.S.get(
             checkout_url,
@@ -175,6 +204,7 @@ class Shopify(threading.Thread):
         return r.url
 
     def submit_customer_info(self, checkout_url):
+        # submits customer information then returns the latest checkout url
         log(self.tid, 'submitting customer info')
         payload = {
             '_method': 'patch',
@@ -209,14 +239,108 @@ class Shopify(threading.Thread):
             return False
         self.get_auth_token(r.text)
         if self.ship_data is None:
-            self.ship_data = self.get_shipping_info(r.text)
+            self.get_shipping_info(r.url)
         return r.url
 
-    def get_shipping_info(self, source):
-        log(self.tid, 'gathering shipping info')
-        return re.findall('data-backup="(.*?)"', source)[0]
+    def submit_shipping_info(self, checkout_url):
+        log(self.tid, 'submitting shipping info')
+        payload = {
+            '_method': 'patch',
+            'authenticity_token': self.auth_token,
+            'button': '',
+            'checkout[shipping_rate][id]': self.ship_data,
+            'previous_step': 'shipping_method',
+            'step': 'payment_method',
+            'utf8': '✓'
+        }
+        r = self.S.post(
+            checkout_url,
+            headers=self.form_headers,
+            data=payload
+        )
+        print '\n\n{}\n\n'.format(r.text)
+        r.raise_for_status()
+        if self.is_sold_out(r.url):
+            return False
+        self.get_auth_token(r.text)
+        self.get_total_cost(r.text)
+        if self.gateway_id is None:
+            while (self.gateway_id is None) or (self.gateway_id == []):
+                self.S.get(r.url, headers=self.headers)
+                sleep(5)
+                self.get_gateway_id(r.text)
+                sleep(5)
+        return r.url
 
-    def submit_shipping_info(self,):
+    def submit_payment_info(self):
+        log(self.tid, 'submitting cc information')
+        headers = {
+            'Accept': 'application/json',
+            'Origin': 'https://checkout.shopifycs.com',
+            'Referrer': 'https://checkout.shopifycs.com',
+            'Content-Type': 'application/json',
+            'Upgrade-Insecure-Requests': '1',
+            'Accept-Encoding': 'gzip, deflate, sdch',
+            'Accept-Language': 'en-US,en;q=0.8',
+            'Cache-Control': 'no-cache',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/58.0.3029.81 Safari/537.36'
+        }
+        payload = {
+            "credit_card": {
+                "number": self.c['checkout']['cc'],
+                "name": self.c['checkout']['fname'] + " " + self.c['checkout']['lname'],
+                "month": self.c['checkout']['exp_m'],
+                "year": self.c['checkout']['exp_y'],
+                "verification_value": self.c['checkout']['cvv']
+            }
+        }
+        r = self.S.request(
+            'POST',
+            'https://elb.deposit.shopifycs.com/sessions',
+            json=payload,
+            headers=headers
+        )
+        r.raise_for_status()
+        try:
+            log(self.tid, 'getting payment id')
+            return r.json()['id']
+        except KeyError:
+            raise Exception('key error finding payment id')
+
+    def submit_order(self, checkout_url, payment_id):
+        log(self.tid, 'submitting order with payment id {}'.format(payment_id))
+        payload = {
+            '_method': 'patch',
+            'authenticity_token': self.auth_token,
+            'checkout[billing_address][address1]': '',
+            'checkout[billing_address][address2]': '',
+            'checkout[billing_address][city]': '',
+            'checkout[billing_address][country]': 'United States',
+            'checkout[billing_address][first_name]': '',
+            'checkout[billing_address][last_name]': '',
+            'checkout[billing_address][phone]': '',
+            'checkout[billing_address][province]': self.c['checkout']['state'],
+            'checkout[billing_address][zip]': '',
+            'checkout[client_details][browser_height]': '640',
+            'checkout[client_details][browser_width]': '1280',
+            'checkout[client_details][javascript_enabled]': '1',
+            'checkout[credit_card][vault]': 'false',
+            'checkout[different_billing_address]': 'false',
+            'checkout[payment_gateway]': self.gateway_id,
+            'checkout[total_price]': self.total_cost,
+            'complete': '1',
+            'previous_step': 'payment_method',
+            's': payment_id,
+            'step': '',
+            'utf8': '✓'
+        }
+        r = self.S.post(
+            checkout_url,
+            headers=self.form_headers,
+            data=payload
+        )
+        r.raise_for_status()
 
     def run(self):
         while True:
@@ -237,3 +361,10 @@ class Shopify(threading.Thread):
             exit(-1)
         checkout_url = self.add_to_cart(selected_variant)
         checkout_url = self.open_checkout(checkout_url)
+        checkout_url = self.submit_customer_info(checkout_url)
+        checkout_url = self.submit_shipping_info(checkout_url)
+        payment_id = self.submit_payment_info()
+        if self.submit_order(checkout_url, payment_id):
+            log(self.tid, 'order submitted successfully. check email {}'.format(self.c['checkout']['email']))
+            log(self.tid, 'time to return {} sec'.format(abs(self.start_time-time())))
+
