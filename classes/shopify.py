@@ -24,6 +24,7 @@ class Shopify(threading.Thread):
         self.ship_data = None
         self.total_cost = None
         self.gateway_id = None
+        self.cap_response = None
         self.S = requests.Session()
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -58,18 +59,62 @@ class Shopify(threading.Thread):
     def is_sold_out(self, url):
         # returns true if sold out, otherwise returns false
         if 'stock_problems' in url:
-            log(self.tid, 'sold out')
+            log(self.tid, 'sold out :(')
             return True
         return False
 
     def is_in_queue(self, url):
-        # returns true if checkout is in queue, otherwise false
+        # returns true once the url is through the queue
+        # TODO: make this fx poll the js instead of the checkout page
         while 'queue' in url:
-            log(self.tid, 'in queue...')
-            self.S.get(url, headers=headers)
+            log(self.tid, 'in queue...polling until through')
+            self.S.get(url, headers=self.headers)
             sleep(1)
         return True
 
+    def is_captcha(self, source):
+        # checks page response for captcha presence and returns true if so
+        if 'g-recaptcha' in source:
+            log(self.tid, 'detected captcha in page source')
+            return True
+        return False
+
+    def get_sitekey(self, source):
+        # finds the captcha site key from the page source
+        log(self.tid, 'finding captcha sitekey')
+        return re.findall('sitekey: "(.*?)"', source)[0]
+
+    def get_captcha_token(self, sitekey, host_url):
+        # returns a usable captcha token based from the sitekey
+        host = 'https://' + host_url.split('/')[2]
+        log(self.tid, 'getting captcha response for sitekey {} and host {}'.format(sitekey, host))
+        s = requests.Session()
+        captcha_id = s.post(
+            'http://2captcha.com/in.php?key={}&method=userrecaptcha&googlekey={}&pageurl={}'.format(
+                self.c['2cap_api_key'],
+                sitekey,
+                host
+            )
+        ).text.split('|')[1]
+        answer = s.get(
+            'http://2captcha.com/res.php?key={}&action=get&id={}'.format(
+                self.c['2cap_api_key'],
+                captcha_id)
+        ).text
+        while 'CAPCHA_NOT_READY' in answer:
+            log(self.tid, 'checking 2captcha response')
+            if 'ERROR' in answer:
+                log(self.tid, 'error: {}'.format(answer))
+                exit(-1)
+            sleep(5)
+            answer = s.get(
+                'http://2captcha.com/res.php?key={}&action=get&id={}'.format(
+                    self.c['2cap_api_key'],
+                    captcha_id)
+            ).text
+        token = answer.split('|')[1]
+        log(self.tid, 'got token {}'.format(token))
+        return token
 
     def get_auth_token(self, source):
         # scrapes a fresh auth token from page source
@@ -209,6 +254,9 @@ class Shopify(threading.Thread):
         r.raise_for_status()
         if self.is_sold_out(r.url):
             return False
+        if self.is_captcha(r.text):
+            sitekey = self.get_sitekey(r.text)
+            self.cap_response = self.get_captcha_token(sitekey, checkout_url)
         self.get_auth_token(r.text)
         return r.url
 
@@ -238,6 +286,9 @@ class Shopify(threading.Thread):
             'step': 'shipping_method',
             'utf8': '✓'
         }
+        if self.cap_response is not None:
+            # adds captcha response to payload if we have one
+            payload['g-recaptcha-response'] = self.cap_response
         r = self.S.post(
             checkout_url,
             headers=self.form_headers,
@@ -362,7 +413,7 @@ class Shopify(threading.Thread):
             log(self.tid, 'couldnt match variant against selected size, please pick numerically\n')
             i = 0
             for v in product_variants:
-                print '#{} - {}'.format(i, v.size)
+                print '#{} - SIZE {}'.format(str(i).zfill(2), v.size)
                 i += 1
             x = raw_input('please enter a product index #\n> ')
             try:
@@ -372,12 +423,15 @@ class Shopify(threading.Thread):
                     log(self.tid, 'error selection {} not in range'.format(x))
             except ValueError:
                 log(self.tid, 'error please enter a number')
-        checkout_url = self.add_to_cart(selected_variant)
-        checkout_url = self.open_checkout(checkout_url)
-        checkout_url = self.submit_customer_info(checkout_url)
-        checkout_url = self.submit_shipping_info(checkout_url)
-        payment_id = self.submit_payment_info()
-        if self.submit_order(checkout_url, payment_id):
-            log(self.tid, 'order submitted successfully. check email {}'.format(self.c['checkout']['email']))
-            log(self.tid, 'time to return {} sec'.format(abs(self.start_time-time())))
+        try:
+            checkout_url = self.add_to_cart(selected_variant)
+            checkout_url = self.open_checkout(checkout_url)
+            checkout_url = self.submit_customer_info(checkout_url)
+            checkout_url = self.submit_shipping_info(checkout_url)
+            payment_id = self.submit_payment_info()
+            if self.submit_order(checkout_url, payment_id):
+                log(self.tid, 'order submitted successfully. check email {}'.format(self.c['checkout']['email']))
+                log(self.tid, 'time to return {} sec'.format(abs(self.start_time-time())))
+        except requests.exceptions.MissingSchema:
+            log(self.tid, 'error: a request was passed a null url')
 

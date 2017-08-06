@@ -2,3 +2,7 @@
 config.json
 
 *.pyc
+
+*.xml
+
+*.iml
