@@ -21,7 +21,7 @@ class Shopify(threading.Thread):
             self.c = json.load(config)
         self.tid = tid  # Thread id number
         self.auth_token = ''  # Stores the current auth token. Should be re-scraped after every step of checkout
-        self.ship_data = None  # You can preset some of these values to maybe save 0.5 seconds during checkout
+        self.ship_data = None  
         self.total_cost = None
         self.gateway_id = None
         self.S = requests.Session()
@@ -76,7 +76,7 @@ class Shopify(threading.Thread):
 
     def get_gateway_id(self, source):
         log(self.tid, 'getting payment gateway id')
-        self.gateway_id = re.findall('data-brand-icons-for-gateway="(.*?)"', source)
+        self.gateway_id = re.findall('data-brand-icons-for-gateway="(.*?)"', source)[0]
         log(self.tid, 'found payment gateway id {}'.format(self.gateway_id))
         return
 
@@ -211,8 +211,8 @@ class Shopify(threading.Thread):
             'authenticity_token': self.auth_token,
             'button': '',
             'checkout[buyer_accepts_marketing]': '1',
-            'checkout[client_details][browser_height]': '640',
-            'checkout[client_details][browser_width]': '497',
+            'checkout[client_details][browser_height]': '1903',
+            'checkout[client_details][browser_width]': '960',
             'checkout[client_details][javascript_enabled]': '1',
             'checkout[email]': self.c['checkout']['email'],
             'checkout[remember_me]': 'false',
@@ -238,8 +238,7 @@ class Shopify(threading.Thread):
         if self.is_sold_out(r.url):
             return False
         self.get_auth_token(r.text)
-        if self.ship_data is None:
-            self.get_shipping_info(r.url)
+        self.get_shipping_info(r.url)
         return r.url
 
     def submit_shipping_info(self, checkout_url):
@@ -253,23 +252,19 @@ class Shopify(threading.Thread):
             'step': 'payment_method',
             'utf8': '✓'
         }
+        self.form_headers['Referrer'] = checkout_url
+        self.form_headers['Origin'] = checkout_url
         r = self.S.post(
-            checkout_url,
+            checkout_url + '/shipping_rates?step=shipping_method',
             headers=self.form_headers,
             data=payload
         )
-        print '\n\n{}\n\n'.format(r.text)
         r.raise_for_status()
         if self.is_sold_out(r.url):
             return False
         self.get_auth_token(r.text)
         self.get_total_cost(r.text)
-        if self.gateway_id is None:
-            while (self.gateway_id is None) or (self.gateway_id == []):
-                self.S.get(r.url, headers=self.headers)
-                sleep(5)
-                self.get_gateway_id(r.text)
-                sleep(5)
+        self.get_gateway_id(r.text)
         return r.url
 
     def submit_payment_info(self):
