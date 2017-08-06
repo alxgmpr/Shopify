@@ -21,7 +21,7 @@ class Shopify(threading.Thread):
             self.c = json.load(config)
         self.tid = tid  # Thread id number
         self.auth_token = ''  # Stores the current auth token. Should be re-scraped after every step of checkout
-        self.ship_data = None  
+        self.ship_data = None
         self.total_cost = None
         self.gateway_id = None
         self.S = requests.Session()
@@ -336,6 +336,7 @@ class Shopify(threading.Thread):
             data=payload
         )
         r.raise_for_status()
+        return True
 
     def run(self):
         while True:
