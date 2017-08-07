@@ -3,7 +3,9 @@ import json
 import threading
 import re
 from time import time, sleep
+from urllib import quote
 
+from datetime import datetime
 import requests
 
 from classes.product import Product
@@ -88,33 +90,38 @@ class Shopify(threading.Thread):
         # returns a usable captcha token based from the sitekey
         host = 'https://' + host_url.split('/')[2]
         log(self.tid, 'getting captcha response for sitekey {} and host {}'.format(sitekey, host))
-        s = requests.Session()
-        captcha_id = s.post(
-            'http://2captcha.com/in.php?key={}&method=userrecaptcha&googlekey={}&pageurl={}'.format(
-                self.c['2cap_api_key'],
-                sitekey,
-                host
-            )
-        ).text.split('|')[1]
-        answer = s.get(
-            'http://2captcha.com/res.php?key={}&action=get&id={}'.format(
-                self.c['2cap_api_key'],
-                captcha_id)
-        ).text
-        while 'CAPCHA_NOT_READY' in answer:
-            log(self.tid, 'checking 2captcha response')
-            if 'ERROR' in answer:
-                log(self.tid, 'error: {}'.format(answer))
-                exit(-1)
-            sleep(5)
+        if self.c['checkout_mode'] == '2cap':
+            s = requests.Session()
+            captcha_id = s.post(
+                'http://2captcha.com/in.php?key={}&method=userrecaptcha&googlekey={}&pageurl={}'.format(
+                    self.c['2cap_api_key'],
+                    sitekey,
+                    host
+                )
+            ).text.split('|')[1]
             answer = s.get(
                 'http://2captcha.com/res.php?key={}&action=get&id={}'.format(
                     self.c['2cap_api_key'],
                     captcha_id)
             ).text
-        token = answer.split('|')[1]
-        log(self.tid, 'got token {}'.format(token))
-        return token
+            while 'CAPCHA_NOT_READY' in answer:
+                log(self.tid, 'checking 2captcha response')
+                if 'ERROR' in answer:
+                    log(self.tid, 'error: {}'.format(answer))
+                    exit(-1)
+                sleep(5)
+                answer = s.get(
+                    'http://2captcha.com/res.php?key={}&action=get&id={}'.format(
+                        self.c['2cap_api_key'],
+                        captcha_id)
+                ).text
+            token = answer.split('|')[1]
+            log(self.tid, 'got token {}'.format(token))
+            return token
+        else:
+            log(self.tid, 'error: checkout mode is set to {}'.format(self.c['checkout_mode']))
+            log(self.tid, 'if bypass is turned on, get_captcha_token() shoudnt be called')
+            exit(-1)
 
     def get_auth_token(self, source):
         # scrapes a fresh auth token from page source
@@ -135,38 +142,78 @@ class Shopify(threading.Thread):
         return
 
     def get_shipping_info(self, checkout_url):
-        log(self.tid, 'gathering shipping info')
-        r = self.S.get(
-            checkout_url,
-            headers=self.headers
-        )
-        r.raise_for_status()
-        self.ship_data = re.findall('data-backup="(.*?)"', r.text)[0]
+        if self.c['shipping_get_method'] == 'normal':
+            log(self.tid, 'gathering shipping info (normal method)')
+            r = self.S.get(
+                checkout_url,
+                headers=self.headers
+            )
+            r.raise_for_status()
+            self.ship_data = re.findall('data-backup="(.*?)"', r.text)[0]
+        elif self.c['shipping_get_method'] == 'advanced':
+            # JSON SHIPPING METHOD (USE FOR SITES THAT DONT HAVE PRODUCTS LOADED)
+            log(self.tid, 'gathering shipping info (advanced method)')
+            params = {
+                'shipping_address[zip]': self.c['checkout']['zip'],
+                'shipping_address[country]': 'United States',
+                'shipping_address[province]': self.c['checkout']['state']
+            }
+            r = self.S.get(
+                self.c['site'] + '/cart/shipping_rates.json',
+                params=params,
+                headers=self.headers
+            )
+            r.raise_for_status()
+            r = r.json()
+            self.ship_data = '{}-{}-{}'.format(
+                r['shipping_rates'][0]['source'],
+                r['shipping_rates'][0]['code'],
+                r['shipping_rates'][0]['price']
+            )
+            self.ship_data = quote(self.ship_data, safe='()')
+        else:
+            log(self.tid, 'malformed shipping get method in config')
+            log(self.tid, 'acceptable configurations: "normal" or "advanced"')
+            exit(-1)
         log(self.tid, 'found shipping method {}'.format(self.ship_data))
         return
 
     def get_products(self):
         # scrapes all products on the site
         # returns a list of product objects
-        log(self.tid, 'fetching product list')
-        url = self.c['site'] + '/collections/all.atom'
-        r = self.S.get(
-            url,
-            headers=self.headers,
-            allow_redirects=False
-        )
-        r.raise_for_status()
-        product_urls = re.findall('<link rel="alternate" type="text/html" href="(.*?)"/>', r.text)
-        product_urls.pop(0)  # Remove first link from list (map base link)
-        product_titles = re.findall('<title>(.*?)</title>\s*<s:type', r.text)
-        product_objects = []
-        if len(product_urls) != len(product_titles):
-            raise Exception('mismatched product indices')
-        log(self.tid, 'scraped {} products'.format(len(product_urls)))
-        for i in range(0, len(product_urls)):
-            # log(self.tid, '{}'.format(product_titles[i]))
-            product_objects.append(Product(product_titles[i], product_urls[i]))
-        return product_objects
+        if self.c['product_scrape_method'] == 'atom':
+            log(self.tid, 'fetching product list (atom method)')
+            url = self.c['site'] + '/collections/footwear.atom'
+            r = self.S.get(
+                url,
+                headers=self.headers,
+                allow_redirects=False
+            )
+            r.raise_for_status()
+            product_urls = re.findall('<link rel="alternate" type="text/html" href="(.*?)"/>', r.text)
+            product_urls.pop(0)  # Remove first link from list (map base link)
+            product_titles = re.findall('<title>(.*?)</title>\s*<s:type', r.text)
+            product_objects = []
+            if len(product_urls) != len(product_titles):
+                raise Exception('mismatched product indices')
+            log(self.tid, 'scraped {} products'.format(len(product_urls)))
+            for i in range(0, len(product_urls)):
+                # log(self.tid, '{}'.format(product_titles[i]))
+                product_objects.append(Product(product_titles[i], product_urls[i]))
+            return product_objects
+        elif self.c['product_scrape_method'] == 'json':
+            log(self.tid, 'fetching product list (json method)')
+
+        elif self.c['product_scrape_method'] == 'xml':
+            log(self.tid, 'fetching product list (xml method)')
+
+        elif self.c['product_scrape_method'] == 'oembed':
+            log(self.tid, 'fetching product list (oembed method)')
+
+        else:
+            log(self.tid, 'malformed product scrape method in config')
+            log(self.tid, 'acceptable configurations: "atom", "xml", "json", or "oembed"')
+            exit(-1)
 
     def check_products(self, product_list):
         # compares a list of product objects against keywords
@@ -243,6 +290,23 @@ class Shopify(threading.Thread):
         )
         r.raise_for_status()
         return r.text.split('"')[1]
+
+    def remove_from_cart(self, quantity, position):
+        # changes the quantity/position of an item in the cart.
+        log(self.tid, 'removing {} item from position {}'.format(quantity, position))
+        payload = {
+            'quantity': quantity,
+            'line': position
+        }
+        r = self.S.post(
+            self.c['site'] + '/cart/change.js',
+            data=payload,
+            headers=self.form_headers
+        )
+        r.raise_for_status()
+        r = r.json()
+        log(self.tid, 'current cart quantity: {}'.format(r['item_count']))
+        return
 
     def open_checkout(self, checkout_url):
         # opens the checkout url to scrape auth token and check for sold out
@@ -399,39 +463,89 @@ class Shopify(threading.Thread):
         return True
 
     def run(self):
-        while True:
-            product_list = self.get_products()
-            product_match = self.check_products(product_list)
-            if product_match is not None:
-                log(self.tid, 'found matching product - {}'.format(product_match.url))
-                break
-            self.refresh_poll()
-        product_variants = self.get_product_info(product_match)
-        selected_variant = self.check_variants(product_variants)
-        while selected_variant is None:
-            # if a match isnt found, have the user select the size manually
-            log(self.tid, 'couldnt match variant against selected size, please pick numerically\n')
-            i = 0
-            for v in product_variants:
-                print '#{} - SIZE {}'.format(str(i).zfill(2), v.size)
-                i += 1
-            x = raw_input('please enter a product index #\n> ')
+        if self.c['checkout_mode'] == '2cap':
+            log(self.tid, 'selected 2captcha checkout mode (no bypass)')
+            while True:
+                product_list = self.get_products()
+                product_match = self.check_products(product_list)
+                if product_match is not None:
+                    log(self.tid, 'found matching product - {}'.format(product_match.url))
+                    break
+                self.refresh_poll()
+            product_variants = self.get_product_info(product_match)
+            selected_variant = self.check_variants(product_variants)
+            while selected_variant is None:
+                # if a match isnt found, have the user select the size manually
+                log(self.tid, 'couldnt match variant against selected size, please pick numerically\n')
+                i = 0
+                for v in product_variants:
+                    print '#{} - SIZE {}'.format(str(i).zfill(2), v.size)
+                    i += 1
+                x = raw_input('please enter a product index #\n> ')
+                try:
+                    if 0 < int(x) < len(product_variants):
+                        selected_variant = product_variants[int(x)]
+                    else:
+                        log(self.tid, 'error selection {} not in range'.format(x))
+                except ValueError:
+                    log(self.tid, 'error please enter a number')
             try:
-                if 0 < int(x) < len(product_variants):
-                    selected_variant = product_variants[int(x)]
-                else:
-                    log(self.tid, 'error selection {} not in range'.format(x))
-            except ValueError:
-                log(self.tid, 'error please enter a number')
-        try:
-            checkout_url = self.add_to_cart(selected_variant)
-            checkout_url = self.open_checkout(checkout_url)
-            checkout_url = self.submit_customer_info(checkout_url)
+                checkout_url = self.add_to_cart(selected_variant)
+                checkout_url = self.open_checkout(checkout_url)
+                checkout_url = self.submit_customer_info(checkout_url)
+                checkout_url = self.submit_shipping_info(checkout_url)
+                payment_id = self.submit_payment_info()
+                if self.submit_order(checkout_url, payment_id):
+                    log(self.tid, 'order submitted successfully. check email {}'.format(self.c['checkout']['email']))
+                    log(self.tid, 'time to return {} sec'.format(abs(self.start_time-time())))
+            except requests.exceptions.MissingSchema:
+                log(self.tid, 'error: a request was passed a null url')
+                exit(-1)
+        elif self.c['checkout_mode'] == 'dummy_bypass':
+            log(self.tid, 'selected dummy bypass mode')
+            log(self.tid, 'adding dummy product to cart')
+            # add and start dummy product checkout
+            try:
+                checkout_url = self.add_to_cart(Variant('353867681', None))  # Kith jason markk cleaning shit
+                checkout_url = self.open_checkout(checkout_url)
+                checkout_url = self.submit_customer_info(checkout_url)
+            except requests.exceptions.MissingSchema:
+                log(self.tid, 'error: a request was passed a null url')
+                exit(-1)
+            # wait for timer
+            log(self.tid, 'waiting for drop time {}'.format(self.c['drop_timer']))
+            while True:
+                if datetime.now().strftime('%H:%M:%S') >= self.c['drop_timer']:
+                    log(self.tid, 'drop timer passed...continuing with checkout')
+                    break
+                sleep(1)
+            # find the actual product
+            while True:
+                product_list = self.get_products()
+                product_match = self.check_products(product_list)
+                if product_match is not None:
+                    log(self.tid, 'found matching product - {}'.format(product_match.url))
+                    break
+                self.refresh_poll()
+            product_variants = self.get_product_info(product_match)
+            selected_variant = self.check_variants(product_variants)
+            self.add_to_cart(selected_variant)  # dont use the new checkout url
+            # remove dummy product from cart
+            self.remove_from_cart(0, 2)
+            # refresh the checkout page
+            r = self.S.get(
+                checkout_url,
+                headers=self.headers
+            )
+            r.raise_for_status()
+            # finish checkout
             checkout_url = self.submit_shipping_info(checkout_url)
             payment_id = self.submit_payment_info()
             if self.submit_order(checkout_url, payment_id):
                 log(self.tid, 'order submitted successfully. check email {}'.format(self.c['checkout']['email']))
-                log(self.tid, 'time to return {} sec'.format(abs(self.start_time-time())))
-        except requests.exceptions.MissingSchema:
-            log(self.tid, 'error: a request was passed a null url')
+                log(self.tid, 'time to return {} sec'.format(abs(self.start_time - time())))
+        else:
+            log(self.tid, 'malformed checkout mode in config')
+            log(self.tid, 'acceptable configurations: "2cap" or "dummy_bypass"')
+            exit(-1)
 

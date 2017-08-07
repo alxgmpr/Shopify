@@ -5,8 +5,8 @@
   "poll_time": 5,
   "2cap_api_key": "YOURAPIKEYHERE",
   "product": {
-    "preset_url": "",
-    "preset_var": "",
+    "preset_url": null,
+    "preset_var": null,
     "positive_kw": "",
     "negative_kw": "",
     "size": "10"
