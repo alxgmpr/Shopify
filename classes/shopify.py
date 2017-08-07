@@ -21,6 +21,8 @@ class Shopify(threading.Thread):
         threading.Thread.__init__(self)
         with open(config_filename) as config:
             self.c = json.load(config)
+        if not self.config_check(self.c):
+            raise Exception('malformed config file. check your set up')
         self.tid = tid  # Thread id number
         self.auth_token = ''  # Stores the current auth token. Should be re-scraped after every step of checkout
         self.ship_data = None
@@ -51,6 +53,24 @@ class Shopify(threading.Thread):
             'DNT': '1'
         }
         log(self.tid, 'shopify ATC by Alex++ @edzart/@573supreme')  # gang gang
+
+    def config_check(self, config):
+        log(self.tid, 'validating config file')
+        if config['checkout_mode'] != ('dummy_bypass' or '2cap'):
+            log(self.tid, 'unrecognized checkout_mode')
+            return False
+        if config['shipping_get_method'] != ('normal' or 'advanced'):
+            log(self.tid, 'unrecognized shipping_get_method')
+            return False
+        if config['product_scrape_method'] != ('atom' or 'json' or 'xml' or 'oembed'):
+            log(self.tid, 'unrecognized product_scrape_method')
+            return False
+        if (config['checkout_mode'] == '2cap') and (config['2cap_api_key'] == ('YOURAPIKEYHERE' or None or '')):
+            log(self.tid, 'checkout mode set to use 2captcha but no api key provided')
+            return False
+        if (config['checkout_mode'] == 'dummy_bypass') and (config['dummy_variant'] == (None or '')):
+            log(self.tid, 'checkout mode set to bypass but no dummy variant provided')
+            return False
 
     def refresh_poll(self):
         # sleeps a set amount of time. see config
@@ -506,7 +526,7 @@ class Shopify(threading.Thread):
             log(self.tid, 'adding dummy product to cart')
             # add and start dummy product checkout
             try:
-                checkout_url = self.add_to_cart(Variant('353867681', None))  # Kith jason markk cleaning shit
+                checkout_url = self.add_to_cart(Variant(self.c['dummy_variant'], None))  # Kith jason markk cleaning shit
                 checkout_url = self.open_checkout(checkout_url)
                 checkout_url = self.submit_customer_info(checkout_url)
             except requests.exceptions.MissingSchema:
