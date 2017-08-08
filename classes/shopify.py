@@ -111,6 +111,7 @@ class Shopify(threading.Thread):
         host = 'https://' + host_url.split('/')[2]
         log(self.tid, 'getting captcha response for sitekey {} and host {}'.format(sitekey, host))
         if self.c['checkout_mode'] == '2cap':
+            # TODO: make this use a captcha class that starts ~5 threads to get a quicker response
             s = requests.Session()
             captcha_id = s.post(
                 'http://2captcha.com/in.php?key={}&method=userrecaptcha&googlekey={}&pageurl={}'.format(
@@ -140,7 +141,7 @@ class Shopify(threading.Thread):
             return token
         else:
             log(self.tid, 'error: checkout mode is set to {}'.format(self.c['checkout_mode']))
-            log(self.tid, 'if bypass is turned on, get_captcha_token() shoudnt be called')
+            log(self.tid, 'if bypass is turned on, get_captcha_token() shoudnt be called...')
             exit(-1)
 
     def get_auth_token(self, source):
@@ -203,13 +204,17 @@ class Shopify(threading.Thread):
         # returns a list of product objects
         if self.c['product_scrape_method'] == 'atom':
             log(self.tid, 'fetching product list (atom method)')
-            url = self.c['site'] + '/collections/footwear.atom'
             r = self.S.get(
-                url,
+                self.c['site'] + '/collections/all.atom',
                 headers=self.headers,
                 allow_redirects=False
             )
-            r.raise_for_status()
+            try:
+                r.raise_for_status()
+            except requests.exceptions.HTTPError:
+                log(self.tid, 'atom method got http error, switching to xml method')
+                self.c['product_scrape_method'] = 'xml'
+                return self.get_products()
             product_urls = re.findall('<link rel="alternate" type="text/html" href="(.*?)"/>', r.text)
             product_urls.pop(0)  # Remove first link from list (map base link)
             product_titles = re.findall('<title>(.*?)</title>\s*<s:type', r.text)
@@ -223,13 +228,40 @@ class Shopify(threading.Thread):
             return product_objects
         elif self.c['product_scrape_method'] == 'json':
             log(self.tid, 'fetching product list (json method)')
-
+            r = self.S.get(
+                self.c['site'] + '/products.json',
+                headers=self.headers,
+                allow_redirects=False
+            )
+            try:
+                r.raise_for_status()
+            except requests.exceptions.HTTPError:
+                log(self.tid, 'json method got http error, switching to xml method')
+                self.c['product_scrape_method'] = 'xml'
+                return self.get_products()
+            r = r.json()
         elif self.c['product_scrape_method'] == 'xml':
             log(self.tid, 'fetching product list (xml method)')
-
+            r = self.S.get(
+                self.c['site'] + '/sitemap_products_1.xml',
+                headers=self.headers,
+                allow_redirects=False
+            )
+            r.raise_for_status()
         elif self.c['product_scrape_method'] == 'oembed':
             log(self.tid, 'fetching product list (oembed method)')
-
+            r = self.S.get(
+                self.c['site'] + '/collections/all.oembed',
+                headers=self.headers,
+                allow_redirects=False
+            )
+            try:
+                r.raise_for_status()
+            except requests.exceptions.HTTPError:
+                log(self.tid, 'oembed method got http error, switching to xml method')
+                self.c['product_scrape_method'] = 'xml'
+                return self.get_products()
+            r = r.json()
         else:
             log(self.tid, 'malformed product scrape method in config')
             log(self.tid, 'acceptable configurations: "atom", "xml", "json", or "oembed"')
