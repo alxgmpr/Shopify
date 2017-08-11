@@ -21,8 +21,6 @@ class Shopify(threading.Thread):
         threading.Thread.__init__(self)
         with open(config_filename) as config:
             self.c = json.load(config)
-        if not self.config_check(self.c):
-            raise Exception('malformed config file. check your set up')
         self.tid = tid  # Thread id number
         self.auth_token = ''  # Stores the current auth token. Should be re-scraped after every step of checkout
         self.ship_data = None
@@ -53,24 +51,29 @@ class Shopify(threading.Thread):
             'DNT': '1'
         }
         log(self.tid, 'shopify ATC by Alex++ @edzart/@573supreme')  # gang gang
+        if self.config_check(self.c):
+            log(self.tid, 'config check passed')
+        else:
+            raise Exception('malformed config file. check your set up')
 
     def config_check(self, config):
         log(self.tid, 'validating config file')
-        if config['checkout_mode'] != ('dummy_bypass' or '2cap'):
+        if config['checkout_mode'] not in {'2cap', 'dummy_bypass'}:
             log(self.tid, 'unrecognized checkout_mode')
             return False
-        if config['shipping_get_method'] != ('normal' or 'advanced'):
+        if config['shipping_get_method'] not in {'normal', 'advanced'}:
             log(self.tid, 'unrecognized shipping_get_method')
             return False
-        if config['product_scrape_method'] != ('atom' or 'json' or 'xml' or 'oembed'):
+        if config['product_scrape_method'] not in {'atom', 'json', 'xml', 'oembed'}:
             log(self.tid, 'unrecognized product_scrape_method')
             return False
-        if (config['checkout_mode'] == '2cap') and (config['2cap_api_key'] == ('YOURAPIKEYHERE' or None or '')):
+        if (config['checkout_mode'] == '2cap') and (config['2cap_api_key'] in {'YOURAPIKEYHERE', None, ''}):
             log(self.tid, 'checkout mode set to use 2captcha but no api key provided')
             return False
-        if (config['checkout_mode'] == 'dummy_bypass') and (config['dummy_variant'] == (None or '')):
+        if (config['checkout_mode'] == 'dummy_bypass') and (config['dummy_variant'] in {None, ''}):
             log(self.tid, 'checkout mode set to bypass but no dummy variant provided')
             return False
+        return True
 
     def refresh_poll(self):
         # sleeps a set amount of time. see config
@@ -128,8 +131,7 @@ class Shopify(threading.Thread):
             while 'CAPCHA_NOT_READY' in answer:
                 log(self.tid, 'checking 2captcha response')
                 if 'ERROR' in answer:
-                    log(self.tid, 'error: {}'.format(answer))
-                    exit(-1)
+                    raise Exception('error: {}'.format(answer))
                 sleep(5)
                 answer = s.get(
                     'http://2captcha.com/res.php?key={}&action=get&id={}'.format(
@@ -141,8 +143,7 @@ class Shopify(threading.Thread):
             return token
         else:
             log(self.tid, 'error: checkout mode is set to {}'.format(self.c['checkout_mode']))
-            log(self.tid, 'if bypass is turned on, get_captcha_token() shoudnt be called...')
-            exit(-1)
+            raise Exception('if bypass is turned on, get_captcha_token() shoudnt be called...')
 
     def get_auth_token(self, source):
         # scrapes a fresh auth token from page source
@@ -193,9 +194,8 @@ class Shopify(threading.Thread):
             )
             self.ship_data = quote(self.ship_data, safe='()')
         else:
-            log(self.tid, 'malformed shipping get method in config')
-            log(self.tid, 'acceptable configurations: "normal" or "advanced"')
-            exit(-1)
+            raise Exception('malformed shipping get method in config \n'
+                            'acceptable configurations: "normal" or "advanced"')
         log(self.tid, 'found shipping method {}'.format(self.ship_data))
         return
 
@@ -205,7 +205,7 @@ class Shopify(threading.Thread):
         if self.c['product_scrape_method'] == 'atom':
             log(self.tid, 'fetching product list (atom method)')
             r = self.S.get(
-                self.c['site'] + '/collections/all.atom',
+                self.c['site'] + '/collections/footwear.atom',
                 headers=self.headers,
                 allow_redirects=False
             )
@@ -263,9 +263,8 @@ class Shopify(threading.Thread):
                 return self.get_products()
             r = r.json()
         else:
-            log(self.tid, 'malformed product scrape method in config')
-            log(self.tid, 'acceptable configurations: "atom", "xml", "json", or "oembed"')
-            exit(-1)
+            raise Exception('malformed product scrape method in config\n'
+                            'acceptable configurations: "atom", "xml", "json", or "oembed"')
 
     def check_products(self, product_list):
         # compares a list of product objects against keywords
@@ -286,6 +285,9 @@ class Shopify(threading.Thread):
         return None
 
     def get_product_info(self, product):
+        # oembed method already scrapes vars
+        if self.c['product_scrape_method'] == 'oembed':
+            return None
         # take a product and returns a list of variant objects
         log(self.tid, 'getting product info')
         if product is None:
@@ -311,11 +313,27 @@ class Shopify(threading.Thread):
     def check_variants(self, variant_list):
         # takes a list of variants and searches for a matching size
         log(self.tid, 'comparing variants against configured size')
+        selected_variant = None
         for var in variant_list:
             if self.c['product']['size'] == var.size:
                 log(self.tid, 'found matching variant - {}'.format(var.id))
-                return var
-        return None
+                selected_variant = var
+        while selected_variant is None:
+            # if a match isnt found, have the user select the size manually
+            log(self.tid, 'couldnt match variant against selected size, please pick numerically\n')
+            i = 0
+            for v in variant_list:
+                print '#{} - SIZE {}'.format(str(i).zfill(2), v.size)
+                i += 1
+            x = raw_input('please enter a product index #\n> ')
+            try:
+                if 0 <= int(x) < len(variant_list):
+                    selected_variant = variant_list[int(x)]
+                else:
+                    log(self.tid, 'error selection {} not in range'.format(x))
+            except ValueError:
+                log(self.tid, 'error please enter a number')
+        return selected_variant
 
     def add_to_cart(self, variant):
         # adds a selected variant object to cart and returns the new checkout url
@@ -526,21 +544,6 @@ class Shopify(threading.Thread):
                 self.refresh_poll()
             product_variants = self.get_product_info(product_match)
             selected_variant = self.check_variants(product_variants)
-            while selected_variant is None:
-                # if a match isnt found, have the user select the size manually
-                log(self.tid, 'couldnt match variant against selected size, please pick numerically\n')
-                i = 0
-                for v in product_variants:
-                    print '#{} - SIZE {}'.format(str(i).zfill(2), v.size)
-                    i += 1
-                x = raw_input('please enter a product index #\n> ')
-                try:
-                    if 0 < int(x) < len(product_variants):
-                        selected_variant = product_variants[int(x)]
-                    else:
-                        log(self.tid, 'error selection {} not in range'.format(x))
-                except ValueError:
-                    log(self.tid, 'error please enter a number')
             try:
                 checkout_url = self.add_to_cart(selected_variant)
                 checkout_url = self.open_checkout(checkout_url)
@@ -551,24 +554,22 @@ class Shopify(threading.Thread):
                     log(self.tid, 'order submitted successfully. check email {}'.format(self.c['checkout']['email']))
                     log(self.tid, 'time to return {} sec'.format(abs(self.start_time-time())))
             except requests.exceptions.MissingSchema:
-                log(self.tid, 'error: a request was passed a null url')
-                exit(-1)
+                raise Exception('error: a request was passed a null url')
         elif self.c['checkout_mode'] == 'dummy_bypass':
             log(self.tid, 'selected dummy bypass mode')
             log(self.tid, 'adding dummy product to cart')
             # add and start dummy product checkout
             try:
-                checkout_url = self.add_to_cart(Variant(self.c['dummy_variant'], None))  # Kith jason markk cleaning shit
+                checkout_url = self.add_to_cart(Variant(self.c['dummy_variant'], None))
                 checkout_url = self.open_checkout(checkout_url)
                 checkout_url = self.submit_customer_info(checkout_url)
             except requests.exceptions.MissingSchema:
-                log(self.tid, 'error: a request was passed a null url')
-                exit(-1)
+                raise Exception('error: a request was passed a null url')
             # wait for timer
-            log(self.tid, 'waiting for drop time {}'.format(self.c['drop_timer']))
+            log(self.tid, 'waiting for drop time {}...'.format(self.c['drop_timer']))
             while True:
                 if datetime.now().strftime('%H:%M:%S') >= self.c['drop_timer']:
-                    log(self.tid, 'drop timer passed...continuing with checkout')
+                    log(self.tid, 'drop timer passed.continuing with checkout')
                     break
                 sleep(1)
             # find the actual product
@@ -597,7 +598,5 @@ class Shopify(threading.Thread):
                 log(self.tid, 'order submitted successfully. check email {}'.format(self.c['checkout']['email']))
                 log(self.tid, 'time to return {} sec'.format(abs(self.start_time - time())))
         else:
-            log(self.tid, 'malformed checkout mode in config')
-            log(self.tid, 'acceptable configurations: "2cap" or "dummy_bypass"')
-            exit(-1)
-
+            raise Exception('malformed checkout mode in config\n'
+                            'acceptable configurations: "2cap" or "dummy_bypass"')
