@@ -12,13 +12,12 @@ from classes.product import Product
 from classes.variant import Variant
 from classes.logger import Logger
 
-log = Logger().log
-
 
 class Shopify(threading.Thread):
     def __init__(self, config_filename, tid):
-        self.start_time = time()
         threading.Thread.__init__(self)
+        self.log = Logger(tid).log
+        self.start_time = time()
         with open(config_filename) as config:
             self.c = json.load(config)
         self.tid = tid  # Thread id number
@@ -26,6 +25,8 @@ class Shopify(threading.Thread):
         self.ship_data = None
         self.total_cost = None
         self.gateway_id = None
+        self.captcha_task = False
+        self.sitekey = None
         self.cap_response = None
         self.S = requests.Session()
         self.headers = {
@@ -50,41 +51,46 @@ class Shopify(threading.Thread):
             'Upgrade-Insecure-Requests': '1',
             'DNT': '1'
         }
-        log(self.tid, 'shopify ATC by Alex++ @edzart/@573supreme')  # gang gang
+        self.log('shopify ATC by Alex++ @edzart/@573supreme')  # gang gang
         if self.config_check(self.c):
-            log(self.tid, 'config check passed')
+            self.log('config check passed')
         else:
             raise Exception('malformed config file. check your set up')
 
     def config_check(self, config):
-        log(self.tid, 'validating config file')
+        self.log('validating config file')
         if config['checkout_mode'] not in {'2cap', 'dummy_bypass'}:
-            log(self.tid, 'unrecognized checkout_mode')
+            self.log('unrecognized checkout_mode')
             return False
         if config['shipping_get_method'] not in {'normal', 'advanced'}:
-            log(self.tid, 'unrecognized shipping_get_method')
+            self.log('unrecognized shipping_get_method')
             return False
         if config['product_scrape_method'] not in {'atom', 'json', 'xml', 'oembed'}:
-            log(self.tid, 'unrecognized product_scrape_method')
+            self.log('unrecognized product_scrape_method')
             return False
         if (config['checkout_mode'] == '2cap') and (config['2cap_api_key'] in {'YOURAPIKEYHERE', None, ''}):
-            log(self.tid, 'checkout mode set to use 2captcha but no api key provided')
+            self.log('checkout mode set to use 2captcha but no api key provided')
             return False
         if (config['checkout_mode'] == 'dummy_bypass') and (config['dummy_variant'] in {None, ''}):
-            log(self.tid, 'checkout mode set to bypass but no dummy variant provided')
+            self.log('checkout mode set to bypass but no dummy variant provided')
+            return False
+        if (config['checkout_mode'] == 'dummy_bypass') and (config['cap_harvest_time'] in {None, ''}):
+            self.log('WARNING: checkout mode set to dummy_bypass but no captcha harvest time provided\n'
+                     'if a captcha is present after drop time {} then the program will fail because it will not have\n'
+                     'a harvested captcha to use. Set captcha harvest time to ~2 mins before drop time')
             return False
         return True
 
     def refresh_poll(self):
         # sleeps a set amount of time. see config
-        log(self.tid, 'waiting {} second(s) before refreshing'.format(self.c['poll_time']))
+        self.log('waiting {} second(s) before refreshing'.format(self.c['poll_time']))
         sleep(self.c['poll_time'])
         return
 
     def is_sold_out(self, url):
         # returns true if sold out, otherwise returns false
         if 'stock_problems' in url:
-            log(self.tid, 'sold out :(')
+            self.log('sold out :(')
             return True
         return False
 
@@ -92,7 +98,7 @@ class Shopify(threading.Thread):
         # returns true once the url is through the queue
         # TODO: make this fx poll the js instead of the checkout page
         while 'queue' in url:
-            log(self.tid, 'in queue...polling until through')
+            self.log('in queue...polling until through')
             self.S.get(url, headers=self.headers)
             sleep(1)
         return True
@@ -100,72 +106,68 @@ class Shopify(threading.Thread):
     def is_captcha(self, source):
         # checks page response for captcha presence and returns true if so
         if 'g-recaptcha' in source:
-            log(self.tid, 'detected captcha in page source')
+            self.log('detected captcha in page source')
             return True
         return False
 
     def get_sitekey(self, source):
         # finds the captcha site key from the page source
-        log(self.tid, 'finding captcha sitekey')
+        self.log('finding captcha sitekey')
         return re.findall('sitekey: "(.*?)"', source)[0]
 
     def get_captcha_token(self, sitekey, host_url):
         # returns a usable captcha token based from the sitekey
         host = 'https://' + host_url.split('/')[2]
-        log(self.tid, 'getting captcha response for sitekey {} and host {}'.format(sitekey, host))
-        if self.c['checkout_mode'] == '2cap':
-            # TODO: make this use a captcha class that starts ~5 threads to get a quicker response
-            s = requests.Session()
-            captcha_id = s.post(
-                'http://2captcha.com/in.php?key={}&method=userrecaptcha&googlekey={}&pageurl={}'.format(
-                    self.c['2cap_api_key'],
-                    sitekey,
-                    host
-                )
-            ).text.split('|')[1]
+        self.log('getting captcha response for sitekey {} and host {}'.format(sitekey, host))
+        # TODO: make this use a captcha class that starts ~5 threads to get a quicker response
+        s = requests.Session()
+        captcha_id = s.post(
+            'http://2captcha.com/in.php?key={}&method=userrecaptcha&googlekey={}&pageurl={}'.format(
+                self.c['2cap_api_key'],
+                sitekey,
+                host
+            )
+        ).text.split('|')[1]
+        answer = s.get(
+            'http://2captcha.com/res.php?key={}&action=get&id={}'.format(
+                self.c['2cap_api_key'],
+                captcha_id)
+        ).text
+        while 'CAPCHA_NOT_READY' in answer:
+            self.log('checking 2captcha response')
+            if 'ERROR' in answer:
+                raise Exception('error: {}'.format(answer))
+            sleep(5)
             answer = s.get(
                 'http://2captcha.com/res.php?key={}&action=get&id={}'.format(
                     self.c['2cap_api_key'],
                     captcha_id)
             ).text
-            while 'CAPCHA_NOT_READY' in answer:
-                log(self.tid, 'checking 2captcha response')
-                if 'ERROR' in answer:
-                    raise Exception('error: {}'.format(answer))
-                sleep(5)
-                answer = s.get(
-                    'http://2captcha.com/res.php?key={}&action=get&id={}'.format(
-                        self.c['2cap_api_key'],
-                        captcha_id)
-                ).text
-            token = answer.split('|')[1]
-            log(self.tid, 'got token {}'.format(token))
-            return token
-        else:
-            log(self.tid, 'error: checkout mode is set to {}'.format(self.c['checkout_mode']))
-            raise Exception('if bypass is turned on, get_captcha_token() shoudnt be called...')
+        token = answer.split('|')[1]
+        self.log('got token {}'.format(token))
+        return token
 
     def get_auth_token(self, source):
         # scrapes a fresh auth token from page source
         self.auth_token = re.findall('name="authenticity_token" value="(.*?)"', source)[2]
-        log(self.tid, 'got new auth token {}'.format(self.auth_token))
+        self.log('got new auth token {}'.format(self.auth_token))
         return
 
     def get_total_cost(self, source):
-        log(self.tid, 'getting order total')
+        self.log('getting order total')
         self.total_cost = re.findall('data-checkout-payment-due-target="(.*?)"', source)[0]
-        log(self.tid, 'found order total {}'.format(self.total_cost))
+        self.log('found order total {}'.format(self.total_cost))
         return
 
     def get_gateway_id(self, source):
-        log(self.tid, 'getting payment gateway id')
+        self.log('getting payment gateway id')
         self.gateway_id = re.findall('data-brand-icons-for-gateway="(.*?)"', source)[0]
-        log(self.tid, 'found payment gateway id {}'.format(self.gateway_id))
+        self.log('found payment gateway id {}'.format(self.gateway_id))
         return
 
     def get_shipping_info(self, checkout_url):
         if self.c['shipping_get_method'] == 'normal':
-            log(self.tid, 'gathering shipping info (normal method)')
+            self.log('gathering shipping info (normal method)')
             r = self.S.get(
                 checkout_url,
                 headers=self.headers
@@ -174,7 +176,7 @@ class Shopify(threading.Thread):
             self.ship_data = re.findall('data-backup="(.*?)"', r.text)[0]
         elif self.c['shipping_get_method'] == 'advanced':
             # JSON SHIPPING METHOD (USE FOR SITES THAT DONT HAVE PRODUCTS LOADED)
-            log(self.tid, 'gathering shipping info (advanced method)')
+            self.log('gathering shipping info (advanced method)')
             params = {
                 'shipping_address[zip]': self.c['checkout']['zip'],
                 'shipping_address[country]': 'United States',
@@ -196,14 +198,14 @@ class Shopify(threading.Thread):
         else:
             raise Exception('malformed shipping get method in config \n'
                             'acceptable configurations: "normal" or "advanced"')
-        log(self.tid, 'found shipping method {}'.format(self.ship_data))
+        self.log('found shipping method {}'.format(self.ship_data))
         return
 
     def get_products(self):
         # scrapes all products on the site
         # returns a list of product objects
         if self.c['product_scrape_method'] == 'atom':
-            log(self.tid, 'fetching product list (atom method)')
+            self.log('fetching product list (atom method)')
             r = self.S.get(
                 self.c['site'] + '/collections/footwear.atom',
                 headers=self.headers,
@@ -212,7 +214,7 @@ class Shopify(threading.Thread):
             try:
                 r.raise_for_status()
             except requests.exceptions.HTTPError:
-                log(self.tid, 'atom method got http error, switching to xml method')
+                self.log('atom method got http error, switching to xml method')
                 self.c['product_scrape_method'] = 'xml'
                 return self.get_products()
             product_urls = re.findall('<link rel="alternate" type="text/html" href="(.*?)"/>', r.text)
@@ -221,13 +223,14 @@ class Shopify(threading.Thread):
             product_objects = []
             if len(product_urls) != len(product_titles):
                 raise Exception('mismatched product indices')
-            log(self.tid, 'scraped {} products'.format(len(product_urls)))
+            self.log('scraped {} products'.format(len(product_urls)))
             for i in range(0, len(product_urls)):
-                # log(self.tid, '{}'.format(product_titles[i]))
+                # self.log('{}'.format(product_titles[i]))
                 product_objects.append(Product(product_titles[i], product_urls[i]))
             return product_objects
         elif self.c['product_scrape_method'] == 'json':
-            log(self.tid, 'fetching product list (json method)')
+            # TODO: complete json scrape method
+            self.log('fetching product list (json method)')
             r = self.S.get(
                 self.c['site'] + '/products.json',
                 headers=self.headers,
@@ -236,20 +239,29 @@ class Shopify(threading.Thread):
             try:
                 r.raise_for_status()
             except requests.exceptions.HTTPError:
-                log(self.tid, 'json method got http error, switching to xml method')
+                self.log('json method got http error, switching to xml method')
                 self.c['product_scrape_method'] = 'xml'
                 return self.get_products()
             r = r.json()
         elif self.c['product_scrape_method'] == 'xml':
-            log(self.tid, 'fetching product list (xml method)')
+            # TODO: complete xml scrape method
+            self.log('fetching product list (xml method)')
             r = self.S.get(
                 self.c['site'] + '/sitemap_products_1.xml',
                 headers=self.headers,
                 allow_redirects=False
             )
             r.raise_for_status()
+            # TODO: simplify this regex expression
+            expression = '<loc>(.*)</loc>\s.*</lastmod>\s.*\s.*\s.*\s.*\s.*\s.*<image:title>(.*)</image:title>'
+            products = re.findall(expression, r.text)
+            product_objects = []
+            for prod in products:
+                product_objects.append(Product(prod[1], prod[0]))
+            return product_objects
         elif self.c['product_scrape_method'] == 'oembed':
-            log(self.tid, 'fetching product list (oembed method)')
+            # TODO: complete oembed scrape method
+            self.log('fetching product list (oembed method)')
             r = self.S.get(
                 self.c['site'] + '/collections/all.oembed',
                 headers=self.headers,
@@ -258,10 +270,22 @@ class Shopify(threading.Thread):
             try:
                 r.raise_for_status()
             except requests.exceptions.HTTPError:
-                log(self.tid, 'oembed method got http error, switching to xml method')
+                self.log('oembed method got http error, switching to xml method')
                 self.c['product_scrape_method'] = 'xml'
                 return self.get_products()
             r = r.json()
+            product_objects = []
+            if len(r['products']) < 1:
+                # TODO: make this retry a different category if 'all' fails
+                self.log('error no products found, trying xml method')
+                self.c['product_scrape_method'] = 'xml'
+                return self.get_products()
+            for prod in r['products']:
+                p = Product(prod['title'], None)
+                for var in prod['offers']:
+                    p.add_var(Variant(var['offer_id'], var['title']))
+                product_objects.append(p)
+            return product_objects
         else:
             raise Exception('malformed product scrape method in config\n'
                             'acceptable configurations: "atom", "xml", "json", or "oembed"')
@@ -269,7 +293,7 @@ class Shopify(threading.Thread):
     def check_products(self, product_list):
         # compares a list of product objects against keywords
         # returns a single product object
-        log(self.tid, 'comparing product list against keywords')
+        self.log('comparing product list against keywords')
         if len(product_list) < 1:
             raise Exception('cant check empty product list')
         for prod in product_list:
@@ -289,7 +313,7 @@ class Shopify(threading.Thread):
         if self.c['product_scrape_method'] == 'oembed':
             return None
         # take a product and returns a list of variant objects
-        log(self.tid, 'getting product info')
+        self.log('getting product info')
         if product is None:
             raise Exception('cant open empty product')
         r = self.S.get(
@@ -304,23 +328,23 @@ class Shopify(threading.Thread):
             raise Exception('got non-json response while opening product')
         variant_objects = []
         size_field = self.c['size_field']
-        log(self.tid, 'title: {} :: price: ${}'.format(r['product'][size_field], r['product']['variants'][0]['price']))
+        self.log('title: {} :: price: ${}'.format(r['product'][size_field], r['product']['variants'][0]['price']))
         for var in r['product']['variants']:
-            log(self.tid, '{} :: {}'.format(var['id'], var[size_field]))
+            self.log('{} :: {}'.format(var['id'], var[size_field]))
             variant_objects.append(Variant(var['id'], var[size_field]))
         return variant_objects
 
     def check_variants(self, variant_list):
         # takes a list of variants and searches for a matching size
-        log(self.tid, 'comparing variants against configured size')
+        self.log('comparing variants against configured size')
         selected_variant = None
         for var in variant_list:
             if self.c['product']['size'] == var.size:
-                log(self.tid, 'found matching variant - {}'.format(var.id))
+                self.log('found matching variant - {}'.format(var.id))
                 selected_variant = var
         while selected_variant is None:
             # if a match isnt found, have the user select the size manually
-            log(self.tid, 'couldnt match variant against selected size, please pick numerically\n')
+            self.log('couldnt match variant against selected size, please pick numerically\n')
             i = 0
             for v in variant_list:
                 print '#{} - SIZE {}'.format(str(i).zfill(2), v.size)
@@ -330,14 +354,14 @@ class Shopify(threading.Thread):
                 if 0 <= int(x) < len(variant_list):
                     selected_variant = variant_list[int(x)]
                 else:
-                    log(self.tid, 'error selection {} not in range'.format(x))
+                    self.log('error selection {} not in range'.format(x))
             except ValueError:
-                log(self.tid, 'error please enter a number')
+                self.log('error please enter a number')
         return selected_variant
 
     def add_to_cart(self, variant):
         # adds a selected variant object to cart and returns the new checkout url
-        log(self.tid, 'adding variant to cart')
+        self.log('adding variant to cart')
         if variant is None:
             raise Exception('cant add empty variant to cart')
         payload = {
@@ -351,7 +375,7 @@ class Shopify(threading.Thread):
             allow_redirects=False
         )
         r.raise_for_status()
-        log(self.tid, 'getting checkout page')
+        self.log('getting checkout page')
         r = self.S.post(
             self.c['site'] + '/cart',
             headers=self.form_headers,
@@ -363,7 +387,7 @@ class Shopify(threading.Thread):
 
     def remove_from_cart(self, quantity, position):
         # changes the quantity/position of an item in the cart.
-        log(self.tid, 'removing {} item from position {}'.format(quantity, position))
+        self.log('removing {} item from position {}'.format(quantity, position))
         payload = {
             'quantity': quantity,
             'line': position
@@ -375,12 +399,12 @@ class Shopify(threading.Thread):
         )
         r.raise_for_status()
         r = r.json()
-        log(self.tid, 'current cart quantity: {}'.format(r['item_count']))
+        self.log('current cart quantity: {}'.format(r['item_count']))
         return
 
     def open_checkout(self, checkout_url):
         # opens the checkout url to scrape auth token and check for sold out
-        log(self.tid, 'opening checkout page {}'.format(checkout_url))
+        self.log('opening checkout page {}'.format(checkout_url))
         r = self.S.get(
             checkout_url,
             headers=self.headers
@@ -389,14 +413,15 @@ class Shopify(threading.Thread):
         if self.is_sold_out(r.url):
             return False
         if self.is_captcha(r.text):
-            sitekey = self.get_sitekey(r.text)
-            self.cap_response = self.get_captcha_token(sitekey, checkout_url)
+            self.captcha_task = True
+            self.sitekey = self.get_sitekey(r.text)
+            # self.cap_response = self.get_captcha_token(self.sitekey, checkout_url)
         self.get_auth_token(r.text)
         return r.url
 
     def submit_customer_info(self, checkout_url):
         # submits customer information then returns the latest checkout url
-        log(self.tid, 'submitting customer info')
+        self.log('submitting customer info')
         payload = {
             '_method': 'patch',
             'authenticity_token': self.auth_token,
@@ -420,9 +445,10 @@ class Shopify(threading.Thread):
             'step': 'shipping_method',
             'utf8': '✓'
         }
-        if self.cap_response is not None:
-            # adds captcha response to payload if we have one
-            payload['g-recaptcha-response'] = self.cap_response
+        # NOTE: Moved this to the final step, to support bypass method. Should still be effective.
+        # if self.cap_response is not None:
+        #     # adds captcha response to payload if we have one
+        #     payload['g-recaptcha-response'] = self.cap_response
         r = self.S.post(
             checkout_url,
             headers=self.form_headers,
@@ -436,7 +462,7 @@ class Shopify(threading.Thread):
         return r.url
 
     def submit_shipping_info(self, checkout_url):
-        log(self.tid, 'submitting shipping info')
+        self.log('submitting shipping info')
         payload = {
             '_method': 'patch',
             'authenticity_token': self.auth_token,
@@ -462,7 +488,7 @@ class Shopify(threading.Thread):
         return r.url
 
     def submit_payment_info(self):
-        log(self.tid, 'submitting cc information')
+        self.log('submitting cc information')
         headers = {
             'Accept': 'application/json',
             'Origin': 'https://checkout.shopifycs.com',
@@ -492,13 +518,13 @@ class Shopify(threading.Thread):
         )
         r.raise_for_status()
         try:
-            log(self.tid, 'getting payment id')
+            self.log('getting payment id')
             return r.json()['id']
         except KeyError:
             raise Exception('key error finding payment id')
 
     def submit_order(self, checkout_url, payment_id):
-        log(self.tid, 'submitting order with payment id {}'.format(payment_id))
+        self.log('submitting order with payment id {}'.format(payment_id))
         payload = {
             '_method': 'patch',
             'authenticity_token': self.auth_token,
@@ -523,7 +549,11 @@ class Shopify(threading.Thread):
             's': payment_id,
             'step': '',
             'utf8': '✓'
+
         }
+        if self.cap_response is not None:
+            # adds captcha response to payload if we have one
+            payload['g-recaptcha-response'] = self.cap_response
         r = self.S.post(
             checkout_url,
             headers=self.form_headers,
@@ -534,12 +564,12 @@ class Shopify(threading.Thread):
 
     def run(self):
         if self.c['checkout_mode'] == '2cap':
-            log(self.tid, 'selected 2captcha checkout mode (no bypass)')
+            self.log('selected 2captcha checkout mode (no bypass)')
             while True:
                 product_list = self.get_products()
                 product_match = self.check_products(product_list)
                 if product_match is not None:
-                    log(self.tid, 'found matching product - {}'.format(product_match.url))
+                    self.log('found matching product - {}'.format(product_match.url))
                     break
                 self.refresh_poll()
             product_variants = self.get_product_info(product_match)
@@ -551,13 +581,13 @@ class Shopify(threading.Thread):
                 checkout_url = self.submit_shipping_info(checkout_url)
                 payment_id = self.submit_payment_info()
                 if self.submit_order(checkout_url, payment_id):
-                    log(self.tid, 'order submitted successfully. check email {}'.format(self.c['checkout']['email']))
-                    log(self.tid, 'time to return {} sec'.format(abs(self.start_time-time())))
+                    self.log('order submitted successfully. check email {}'.format(self.c['checkout']['email']))
+                    self.log('time to return {} sec'.format(abs(self.start_time - time())))
             except requests.exceptions.MissingSchema:
                 raise Exception('error: a request was passed a null url')
         elif self.c['checkout_mode'] == 'dummy_bypass':
-            log(self.tid, 'selected dummy bypass mode')
-            log(self.tid, 'adding dummy product to cart')
+            self.log('selected dummy bypass mode')
+            self.log('adding dummy product to cart')
             # add and start dummy product checkout
             try:
                 checkout_url = self.add_to_cart(Variant(self.c['dummy_variant'], None))
@@ -566,10 +596,16 @@ class Shopify(threading.Thread):
             except requests.exceptions.MissingSchema:
                 raise Exception('error: a request was passed a null url')
             # wait for timer
-            log(self.tid, 'waiting for drop time {}...'.format(self.c['drop_timer']))
+            self.log('waiting for drop time {}...'.format(self.c['drop_timer']))
             while True:
+                if self.captcha_task:
+                    if datetime.now().strftime('%H:%M:%S') >= self.c['cap_harvest_time']:
+                        self.log('starting captcha harvest')
+                        # TODO: start a captcha thread(s) here
+                        self.cap_response = self.get_captcha_token(self.sitekey, checkout_url)
+                        self.log('got captcha response, waiting for drop time')
                 if datetime.now().strftime('%H:%M:%S') >= self.c['drop_timer']:
-                    log(self.tid, 'drop timer passed.continuing with checkout')
+                    self.log('drop timer passed. continuing with checkout')
                     break
                 sleep(1)
             # find the actual product
@@ -577,7 +613,7 @@ class Shopify(threading.Thread):
                 product_list = self.get_products()
                 product_match = self.check_products(product_list)
                 if product_match is not None:
-                    log(self.tid, 'found matching product - {}'.format(product_match.url))
+                    self.log('found matching product - {}'.format(product_match.url))
                     break
                 self.refresh_poll()
             product_variants = self.get_product_info(product_match)
@@ -586,8 +622,13 @@ class Shopify(threading.Thread):
             # remove dummy product from cart
             self.remove_from_cart(0, 2)
             # refresh the checkout page
+            params = {
+                'previous_step': 'shipping_method',
+                'step': 'payment_method'
+            }
             r = self.S.get(
                 checkout_url,
+                params=params,
                 headers=self.headers
             )
             r.raise_for_status()
@@ -595,8 +636,8 @@ class Shopify(threading.Thread):
             checkout_url = self.submit_shipping_info(checkout_url)
             payment_id = self.submit_payment_info()
             if self.submit_order(checkout_url, payment_id):
-                log(self.tid, 'order submitted successfully. check email {}'.format(self.c['checkout']['email']))
-                log(self.tid, 'time to return {} sec'.format(abs(self.start_time - time())))
+                self.log('order submitted successfully. check email {}'.format(self.c['checkout']['email']))
+                self.log('time to return {} sec'.format(abs(self.start_time - time())))
         else:
             raise Exception('malformed checkout mode in config\n'
                             'acceptable configurations: "2cap" or "dummy_bypass"')
