@@ -10,10 +10,13 @@ def main():
     i = 0
     files = os.listdir('configs')
     for config in files:
-        if config == 'config.example.json':
-            log('skipping config example file')
+        if config in {'config.example.json',
+                      'slack_config.json',
+                      'slack_config.example.json'
+                      }:
+            pass
         else:
-            log('loading thread {} with config {}'.format(i, config))
+            log('loading thread {} with config {}'.format(i, config), slack=True)
             threads.append(Shopify('configs/' + config, i))
             threads[i].start()
             i += 1

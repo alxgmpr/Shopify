@@ -6,3 +6,5 @@ config.json
 *.xml
 
 *.iml
+
+configs/slack_config.json

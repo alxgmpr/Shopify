@@ -55,7 +55,7 @@ class Shopify(threading.Thread):
         if self.config_check(self.c):
             self.log('config check passed')
         else:
-            raise Exception('malformed config file. check your set up')
+            exit(-1)
 
     def config_check(self, config):
         self.log('validating config file')
@@ -94,12 +94,18 @@ class Shopify(threading.Thread):
             return True
         return False
 
+    def is_password(self, url):
+        # returns true if the request lands on password, and refreshes base url until through
+        if 'password' in url:
+            self.log()
+
     def is_in_queue(self, url):
         # returns true once the url is through the queue
         # TODO: make this fx poll the js instead of the checkout page
         while 'queue' in url:
             self.log('in queue...polling until through')
-            self.S.get(url, headers=self.headers)
+            r = self.S.get(url, headers=self.headers)
+            url = r.url
             sleep(1)
         return True
 
@@ -361,7 +367,7 @@ class Shopify(threading.Thread):
 
     def add_to_cart(self, variant):
         # adds a selected variant object to cart and returns the new checkout url
-        self.log('adding variant to cart')
+        self.log('adding variant to cart', slack=True)
         if variant is None:
             raise Exception('cant add empty variant to cart')
         payload = {
@@ -404,7 +410,7 @@ class Shopify(threading.Thread):
 
     def open_checkout(self, checkout_url):
         # opens the checkout url to scrape auth token and check for sold out
-        self.log('opening checkout page {}'.format(checkout_url))
+        self.log('opening checkout page {}'.format(checkout_url), slack=True)
         r = self.S.get(
             checkout_url,
             headers=self.headers
@@ -421,7 +427,7 @@ class Shopify(threading.Thread):
 
     def submit_customer_info(self, checkout_url):
         # submits customer information then returns the latest checkout url
-        self.log('submitting customer info')
+        self.log('submitting customer info', slack=True)
         payload = {
             '_method': 'patch',
             'authenticity_token': self.auth_token,
@@ -462,7 +468,7 @@ class Shopify(threading.Thread):
         return r.url
 
     def submit_shipping_info(self, checkout_url):
-        self.log('submitting shipping info')
+        self.log('submitting shipping info', slack=True)
         payload = {
             '_method': 'patch',
             'authenticity_token': self.auth_token,
@@ -564,12 +570,12 @@ class Shopify(threading.Thread):
 
     def run(self):
         if self.c['checkout_mode'] == '2cap':
-            self.log('selected 2captcha checkout mode (no bypass)')
+            self.log('selected 2captcha checkout mode (no bypass)', slack=True)
             while True:
                 product_list = self.get_products()
                 product_match = self.check_products(product_list)
                 if product_match is not None:
-                    self.log('found matching product - {}'.format(product_match.url))
+                    self.log('found matching product - {}'.format(product_match.url), slack=True)
                     break
                 self.refresh_poll()
             product_variants = self.get_product_info(product_match)
@@ -581,31 +587,31 @@ class Shopify(threading.Thread):
                 checkout_url = self.submit_shipping_info(checkout_url)
                 payment_id = self.submit_payment_info()
                 if self.submit_order(checkout_url, payment_id):
-                    self.log('order submitted successfully. check email {}'.format(self.c['checkout']['email']))
-                    self.log('time to return {} sec'.format(abs(self.start_time - time())))
+                    self.log('order submitted successfully. check email {}'.format(self.c['checkout']['email']), slack=True)
+                    self.log('time to return {} sec'.format(abs(self.start_time - time())), slack=True)
             except requests.exceptions.MissingSchema:
                 raise Exception('error: a request was passed a null url')
         elif self.c['checkout_mode'] == 'dummy_bypass':
-            self.log('selected dummy bypass mode')
-            self.log('adding dummy product to cart')
+            self.log('selected dummy bypass mode', slack=True)
+            self.log('adding dummy product to cart', slack=True)
             # add and start dummy product checkout
             try:
                 checkout_url = self.add_to_cart(Variant(self.c['dummy_variant'], None))
                 checkout_url = self.open_checkout(checkout_url)
                 checkout_url = self.submit_customer_info(checkout_url)
             except requests.exceptions.MissingSchema:
-                raise Exception('error: a request was passed a null url')
+                raise Exception('error: a request was passed a null url', slack=True)
             # wait for timer
-            self.log('waiting for drop time {}...'.format(self.c['drop_timer']))
+            self.log('waiting for drop time {}...'.format(self.c['drop_timer']), slack=True)
             while True:
                 if self.captcha_task:
                     if datetime.now().strftime('%H:%M:%S') >= self.c['cap_harvest_time']:
-                        self.log('starting captcha harvest')
+                        self.log('starting captcha harvest', slack=True)
                         # TODO: start a captcha thread(s) here
                         self.cap_response = self.get_captcha_token(self.sitekey, checkout_url)
-                        self.log('got captcha response, waiting for drop time')
+                        self.log('got captcha response, waiting for drop time', slack=True)
                 if datetime.now().strftime('%H:%M:%S') >= self.c['drop_timer']:
-                    self.log('drop timer passed. continuing with checkout')
+                    self.log('drop timer passed. continuing with checkout', slack=True)
                     break
                 sleep(1)
             # find the actual product
@@ -613,7 +619,7 @@ class Shopify(threading.Thread):
                 product_list = self.get_products()
                 product_match = self.check_products(product_list)
                 if product_match is not None:
-                    self.log('found matching product - {}'.format(product_match.url))
+                    self.log('found matching product - {}'.format(product_match.url), slack=True)
                     break
                 self.refresh_poll()
             product_variants = self.get_product_info(product_match)
@@ -636,8 +642,8 @@ class Shopify(threading.Thread):
             checkout_url = self.submit_shipping_info(checkout_url)
             payment_id = self.submit_payment_info()
             if self.submit_order(checkout_url, payment_id):
-                self.log('order submitted successfully. check email {}'.format(self.c['checkout']['email']))
-                self.log('time to return {} sec'.format(abs(self.start_time - time())))
+                self.log('order submitted successfully. check email {}'.format(self.c['checkout']['email']), slack=True)
+                self.log('time to return {} sec'.format(abs(self.start_time - time())), slack=True)
         else:
             raise Exception('malformed checkout mode in config\n'
                             'acceptable configurations: "2cap" or "dummy_bypass"')
