@@ -16,7 +16,7 @@ def main():
                       }:
             pass
         else:
-            log('loading thread {} with config {}'.format(i, config), slack=True)
+            log('loading thread {} with config {}'.format(i, config))
             threads.append(Shopify('configs/' + config, i))
             threads[i].start()
             i += 1

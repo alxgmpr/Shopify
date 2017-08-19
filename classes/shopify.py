@@ -16,7 +16,9 @@ from classes.logger import Logger
 class Shopify(threading.Thread):
     def __init__(self, config_filename, tid):
         threading.Thread.__init__(self)
-        self.log = Logger(tid).log
+        logger = Logger(tid)
+        self.log = logger.log
+        self.slack_log = logger.slack_product
         self.start_time = time()
         with open(config_filename) as config:
             self.c = json.load(config)
@@ -338,6 +340,7 @@ class Shopify(threading.Thread):
         for var in r['product']['variants']:
             self.log('{} :: {}'.format(var['id'], var[size_field]))
             variant_objects.append(Variant(var['id'], var[size_field]))
+        self.slack_log(product, variant_objects)
         return variant_objects
 
     def check_variants(self, variant_list):

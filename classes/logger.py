@@ -16,7 +16,15 @@ class Logger:
         print '[{}] :: [{}] :: {}'.format(self.tid, now, text)
         if slack and self.c['enable']:
             data = {
-                'text': '*thread {}* - ```{}```\n'.format(self.tid, text)
+                "attachments": [
+                    {
+                        "fallback": "log report",
+                        "color": "#36a64f",
+                        "author_name": "Thread {}".format(self.tid),
+                        "text": text,
+                        "footer": "powered by alex++",
+                    }
+                ]
             }
             r = requests.post(
                 self.c['webhook_url'],
@@ -28,3 +36,39 @@ class Logger:
             except requests.exceptions.HTTPError:
                 print r.text
                 exit(-1)
+
+    def slack_product(self, product, variant_list):
+        if not self.c['enable']:
+            return
+        vv = ''
+        for v in variant_list:
+            o = vv
+            vv = '{} {} :: {}\n'.format(o, v.id, v.size)
+
+        data = {
+            "attachments": [
+                {
+                    "fallback": "product",
+                    "color": "#36a64f",
+                    "author_name": "Thread {}".format(self.tid),
+                    "text": product.name,
+                    "footer": "powered by alex++",
+                },
+                {
+                    "fallback": "variants",
+                    "color": "#36a64f",
+                    "text": vv,
+                    "footer": "powered by alex++",
+                }
+            ]
+        }
+        r = requests.post(
+            self.c['webhook_url'],
+            json=data,
+            headers={'Content-type': 'application/json'}
+        )
+        try:
+            r.raise_for_status()
+        except requests.exceptions.HTTPError:
+            print r.text
+            exit(-1)
