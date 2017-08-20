@@ -21,8 +21,7 @@ class Logger:
                         "fallback": "log report",
                         "color": "#36a64f",
                         "author_name": "Thread {}".format(self.tid),
-                        "text": text,
-                        "footer": "powered by alex++",
+                        "text": text
                     }
                 ]
             }
@@ -38,27 +37,25 @@ class Logger:
                 exit(-1)
 
     def slack_product(self, product, variant_list):
+        # TODO: make this not look like shit
         if not self.c['enable']:
             return
         vv = ''
         for v in variant_list:
             o = vv
             vv = '{} {} :: {}\n'.format(o, v.id, v.size)
-
         data = {
             "attachments": [
                 {
                     "fallback": "product",
                     "color": "#36a64f",
                     "author_name": "Thread {}".format(self.tid),
-                    "text": product.name,
-                    "footer": "powered by alex++",
+                    "text": product.name
                 },
                 {
                     "fallback": "variants",
                     "color": "#36a64f",
-                    "text": vv,
-                    "footer": "powered by alex++",
+                    "text": vv
                 }
             ]
         }
