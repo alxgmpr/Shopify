@@ -10,6 +10,7 @@ def main():
     i = 0
     files = os.listdir('configs')
     for config in files:
+        # list of config names that aren't threads
         if config in {'config.example.json',
                       'slack_config.json',
                       'slack_config.example.json'
