@@ -1,16 +1,17 @@
 # coding=utf-8
+import datetime
 import json
-import threading
 import re
+import threading
 from time import time, sleep
 from urllib import quote
 
-from datetime import datetime
 import requests
+from selenium import webdriver
 
+from classes.logger import Logger
 from classes.product import Product
 from classes.variant import Variant
-from classes.logger import Logger
 
 
 class Shopify(threading.Thread):
@@ -31,6 +32,7 @@ class Shopify(threading.Thread):
         self.sitekey = None
         self.cap_response = None
         self.S = requests.Session()
+        self.driver = webdriver.Chrome()
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/537.36 (KHTML, like Gecko) '
                           'Chrome/58.0.3029.81 Safari/537.36',
@@ -53,7 +55,6 @@ class Shopify(threading.Thread):
             'Upgrade-Insecure-Requests': '1',
             'DNT': '1'
         }
-        self.log('shopify ATC by Alex++ @edzart/@573supreme')  # gang gang
         if self.config_check(self.c):
             self.log('config check passed')
         else:
@@ -89,27 +90,45 @@ class Shopify(threading.Thread):
         sleep(self.c['poll_time'])
         return
 
-    def is_sold_out(self, url):
+    def sold_out(self, url):
         # returns true if sold out, otherwise returns false
-        if 'stock_problems' in url:
+        while 'stock_problems' in url:
             self.log('sold out :(')
-            return True
-        return False
+            self.refresh_poll()
+            r = self.S.get(
+                url.split('stock_problems')[0],
+                headers=self.headers
+            )
+            r.raise_for_status()
+            url = r.url
+        return
 
-    def is_password(self, url):
+    def password(self, url):
         # returns true if the request lands on password, and refreshes base url until through
-        if 'password' in url:
-            self.log()
+        while 'password' in url:
+            self.log('password page is up')
+            self.refresh_poll()
+            r = self.S.get(
+                self.c['site'],
+                headers=self.headers
+            )
+            r.raise_for_status()
+            url = r.url
+        return
 
-    def is_in_queue(self, url):
+    def queue(self, url):
         # returns true once the url is through the queue
         # TODO: make this fx poll the js instead of the checkout page
         while 'queue' in url:
             self.log('in queue...polling until through')
-            r = self.S.get(url, headers=self.headers)
+            self.refresh_poll()
+            r = self.S.get(
+                url,
+                headers=self.headers
+            )
+            r.raise_for_status()
             url = r.url
-            sleep(1)
-        return True
+        return
 
     def is_captcha(self, source):
         # checks page response for captcha presence and returns true if so
@@ -289,10 +308,10 @@ class Shopify(threading.Thread):
                 self.c['product_scrape_method'] = 'xml'
                 return self.get_products()
             for prod in r['products']:
-                p = Product(prod['title'], None)
+                variant_objects = []
                 for var in prod['offers']:
-                    p.add_var(Variant(var['offer_id'], var['title']))
-                product_objects.append(p)
+                    variant_objects.append(Variant(var['offer_id'], var['title'], stock=var['in_stock']))
+                product_objects.append(Product(prod['title'], None, variants=variant_objects))
             return product_objects
         else:
             raise Exception('malformed product scrape method in config\n'
@@ -306,10 +325,10 @@ class Shopify(threading.Thread):
             raise Exception('cant check empty product list')
         for prod in product_list:
             match = True
-            for key in self.c['product']['positive_kw'].split(','):
+            for key in self.c['product']['positive_kw'].lower().split(','):
                 if key not in prod.name.lower():
                     match = False
-            for key in self.c['product']['negative_kw'].split(','):
+            for key in self.c['product']['negative_kw'].lower().split(','):
                 if key in prod.name.lower():
                     match = False
             if match:
@@ -419,8 +438,8 @@ class Shopify(threading.Thread):
             headers=self.headers
         )
         r.raise_for_status()
-        if self.is_sold_out(r.url):
-            return False
+        self.queue(r.url)
+        self.sold_out(r.url)
         if self.is_captcha(r.text):
             self.captcha_task = True
             self.sitekey = self.get_sitekey(r.text)
@@ -464,8 +483,7 @@ class Shopify(threading.Thread):
             data=payload
         )
         r.raise_for_status()
-        if self.is_sold_out(r.url):
-            return False
+        self.sold_out(r.url)
         self.get_auth_token(r.text)
         self.get_shipping_info(r.url)
         return r.url
@@ -489,8 +507,7 @@ class Shopify(threading.Thread):
             data=payload
         )
         r.raise_for_status()
-        if self.is_sold_out(r.url):
-            return False
+        self.sold_out(r.url)
         self.get_auth_token(r.text)
         self.get_total_cost(r.text)
         self.get_gateway_id(r.text)
@@ -511,12 +528,12 @@ class Shopify(threading.Thread):
                           'Chrome/58.0.3029.81 Safari/537.36'
         }
         payload = {
-            "credit_card": {
-                "number": self.c['checkout']['cc'],
-                "name": self.c['checkout']['fname'] + " " + self.c['checkout']['lname'],
-                "month": self.c['checkout']['exp_m'],
-                "year": self.c['checkout']['exp_y'],
-                "verification_value": self.c['checkout']['cvv']
+            'credit_card': {
+                'number': self.c['checkout']['cc'],
+                'name': self.c['checkout']['fname'] + ' ' + self.c['checkout']['lname'],
+                'month': self.c['checkout']['exp_m'],
+                'year': self.c['checkout']['exp_y'],
+                'verification_value': self.c['checkout']['cvv']
             }
         }
         r = self.S.request(
@@ -608,12 +625,12 @@ class Shopify(threading.Thread):
             self.log('waiting for drop time {}...'.format(self.c['drop_timer']), slack=True)
             while True:
                 if self.captcha_task:
-                    if datetime.now().strftime('%H:%M:%S') >= self.c['cap_harvest_time']:
+                    if datetime.datetime.now().strftime('%H:%M:%S') >= self.c['cap_harvest_time']:
                         self.log('starting captcha harvest', slack=True)
                         # TODO: start a captcha thread(s) here
                         self.cap_response = self.get_captcha_token(self.sitekey, checkout_url)
                         self.log('got captcha response, waiting for drop time', slack=True)
-                if datetime.now().strftime('%H:%M:%S') >= self.c['drop_timer']:
+                if datetime.datetime.now().strftime('%H:%M:%S') >= self.c['drop_timer']:
                     self.log('drop timer passed. continuing with checkout', slack=True)
                     break
                 sleep(1)
