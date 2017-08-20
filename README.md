@@ -1,10 +1,14 @@
 # Shopify
+
 Shopify ATC. Full checkout with captcha/queue bypass. Built by Alex++.
+
+If you like what I've done or if this helps you cop, throw me a shout out on Twitter: [@edzart](https://twitter.com/edzart)
 
 # Requirements
 
 * Python 2.7
 * Requests
+* Selenium (includes chromedriver 2.31 in ```bin``` folder)
 
 # Config
 
@@ -22,8 +26,21 @@ See config.example.json for more help. Most stuff should be pretty self explanat
 
 # Usage
 
-```buildoutcfg
-pip install -r requirements.txt
-
-python main.py
+After editing ```config.example.json``` and renaming to something else:
 ```
+$ pip install -r requirements.txt
+
+$ python main.py
+```
+
+# Known Issues
+
+* Bypass method doesnt work w/ captcha. Captcha must be solved after the latest cart update time.
+* 2Cap solving is slow
+
+# Roadmap
+
+*[X] OEMBED scraping method
+*[ ] Implement anticaptcha solving
+*[ ] Implement threaded captcha solving for 3rd party services
+*[ ] Implement scraping dictionaries to account for variant nomenclature changes (e.g. Haven)
