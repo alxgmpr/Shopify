@@ -32,7 +32,8 @@ class Shopify(threading.Thread):
         self.sitekey = None
         self.cap_response = None
         self.S = requests.Session()
-        self.driver = webdriver.Chrome()
+        self.driver = None
+        self.gmail_cookies = None
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_4) AppleWebKit/537.36 (KHTML, like Gecko) '
                           'Chrome/58.0.3029.81 Safari/537.36',
@@ -173,6 +174,16 @@ class Shopify(threading.Thread):
         token = answer.split('|')[1]
         self.log('got token {}'.format(token))
         return token
+
+    def get_gmail(self):
+        # opens a selenium window allowing the user to login to gmail
+        self.driver = webdriver.Chrome('bin/chromedriver')
+        self.driver.get('https://gmail.com')
+        while 'inbox' not in self.driver.page_source:
+            sleep(3)
+        self.log('successfully logged in...saving cookies')
+        self.gmail_cookies = self.driver.get_cookies()
+        self.driver.close()
 
     def get_auth_token(self, source):
         # scrapes a fresh auth token from page source
@@ -624,6 +635,7 @@ class Shopify(threading.Thread):
             # wait for timer
             self.log('waiting for drop time {}...'.format(self.c['drop_timer']), slack=True)
             while True:
+                # TODO: remove all this shit because you cant solve captcha before last ATC time
                 if self.captcha_task:
                     if datetime.datetime.now().strftime('%H:%M:%S') >= self.c['cap_harvest_time']:
                         self.log('starting captcha harvest', slack=True)
@@ -659,6 +671,7 @@ class Shopify(threading.Thread):
             )
             r.raise_for_status()
             # finish checkout
+            # TODO: move captcha solving to here
             checkout_url = self.submit_shipping_info(checkout_url)
             payment_id = self.submit_payment_info()
             if self.submit_order(checkout_url, payment_id):
