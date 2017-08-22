@@ -3,6 +3,7 @@
   "size_field": "title",
   "proxy": null,
   "2cap_api_key": "YOURAPIKEYHERE",
+  "anticap_api_key": "YOURAPIKEYHERE",
   "checkout_mode": "dummy_bypass",
   "drop_timer": "16:54:40",
   "shipping_get_method": "normal",

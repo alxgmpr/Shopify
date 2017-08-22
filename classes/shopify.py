@@ -282,7 +282,6 @@ class Shopify(threading.Thread):
                 return self.get_products()
             r = r.json()
         elif self.c['product_scrape_method'] == 'xml':
-            # TODO: complete xml scrape method
             self.log('fetching product list (xml method)')
             r = self.S.get(
                 self.c['site'] + '/sitemap_products_1.xml',
@@ -300,8 +299,9 @@ class Shopify(threading.Thread):
         elif self.c['product_scrape_method'] == 'oembed':
             # TODO: complete oembed scrape method
             self.log('fetching product list (oembed method)')
+            collection = 'footwear'
             r = self.S.get(
-                self.c['site'] + '/collections/all.oembed',
+                self.c['site'] + '/collections/{}.oembed'.format(collection),
                 headers=self.headers,
                 allow_redirects=False
             )
@@ -322,7 +322,11 @@ class Shopify(threading.Thread):
                 variant_objects = []
                 for var in prod['offers']:
                     variant_objects.append(Variant(var['offer_id'], var['title'], stock=var['in_stock']))
-                product_objects.append(Product(prod['title'], None, variants=variant_objects))
+                product_objects.append(Product(
+                    prod['title'],
+                    '{}/product/{}'.format(self.c['site'], prod['product_id']),
+                    variants=variant_objects
+                ))
             return product_objects
         else:
             raise Exception('malformed product scrape method in config\n'
@@ -349,7 +353,7 @@ class Shopify(threading.Thread):
     def get_product_info(self, product):
         # oembed method already scrapes vars
         if self.c['product_scrape_method'] == 'oembed':
-            return None
+            return product.variants
         # take a product and returns a list of variant objects
         self.log('getting product info')
         if product is None:
