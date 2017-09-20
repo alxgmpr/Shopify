@@ -267,7 +267,6 @@ class Shopify(threading.Thread):
                 product_objects.append(Product(product_titles[i], product_urls[i]))
             return product_objects
         elif self.c['product_scrape_method'] == 'json':
-            # TODO: complete json scrape method
             self.log('fetching product list (json method)')
             r = self.S.get(
                 self.c['site'] + '/products.json',
@@ -281,6 +280,19 @@ class Shopify(threading.Thread):
                 self.c['product_scrape_method'] = 'xml'
                 return self.get_products()
             r = r.json()
+            product_objects = []
+            for prod in r['products']:
+                variant_objects = []
+                for var in prod['variants']:
+                    # TODO: add inventory testing
+                    variant_objects.append(Variant(var['id'], var[self.c['size_field']]))
+                product_objects.append(Product(
+                    prod['name'],
+                    self.c['site'] + '/product/' + prod['handle'],
+                    variants=variant_objects,
+                    price=prod['variants'][0]['price']
+                ))
+
         elif self.c['product_scrape_method'] == 'xml':
             self.log('fetching product list (xml method)')
             r = self.S.get(
@@ -297,7 +309,6 @@ class Shopify(threading.Thread):
                 product_objects.append(Product(prod[1], prod[0]))
             return product_objects
         elif self.c['product_scrape_method'] == 'oembed':
-            # TODO: complete oembed scrape method
             self.log('fetching product list (oembed method)')
             collection = 'footwear'
             r = self.S.get(
@@ -498,6 +509,16 @@ class Shopify(threading.Thread):
             data=payload
         )
         r.raise_for_status()
+        ##
+        req_cookies = self.S.cookies.get_dict()
+        print req_cookies
+        driver = webdriver.Chrome('bin/chromedriver')
+        driver.get(r.url)
+        sleep(3)
+        for c in req_cookies:
+            driver.add_cookie({'name': c, 'value': req_cookies[c]})
+
+        ##
         self.sold_out(r.url)
         self.get_auth_token(r.text)
         self.get_shipping_info(r.url)
