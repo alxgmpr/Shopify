@@ -9,6 +9,8 @@ def main():
     threads = []
     i = 0
     files = os.listdir('configs')
+    with open('proxies.txt') as proxy_file:
+        proxies = proxy_file.read().splitlines()
     for config in files:
         # list of config names that aren't threads
         if config in {'config.example.json',
@@ -18,7 +20,11 @@ def main():
             pass
         else:
             log('loading thread {} with config {}'.format(i, config))
-            threads.append(Shopify('configs/' + config, i))
+            try:
+                proxy = proxies[i]
+            except IndexError:
+                proxy = None
+            threads.append(Shopify('configs/' + config, i, proxy))
             threads[i].start()
             i += 1
 

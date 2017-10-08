@@ -15,7 +15,7 @@ from classes.variant import Variant
 
 
 class Shopify(threading.Thread):
-    def __init__(self, config_filename, tid):
+    def __init__(self, config_filename, tid, proxy):
         threading.Thread.__init__(self)
         logger = Logger(tid)
         self.log = logger.log
@@ -56,6 +56,12 @@ class Shopify(threading.Thread):
             'Upgrade-Insecure-Requests': '1',
             'DNT': '1'
         }
+        if proxy is not None:
+            proxies = {
+                'http': 'http://{}'.format(proxy),
+                'https': 'https://{}'.format(proxy)
+            }
+            self.S.proxies.update(proxies)
         if self.config_check(self.c):
             self.log('config check passed')
         else:
@@ -245,7 +251,7 @@ class Shopify(threading.Thread):
         if self.c['product_scrape_method'] == 'atom':
             self.log('fetching product list (atom method)')
             r = self.S.get(
-                self.c['site'] + '/collections/footwear.atom',
+                self.c['site'] + '/collections/all.atom',
                 headers=self.headers,
                 allow_redirects=False
             )
@@ -262,9 +268,11 @@ class Shopify(threading.Thread):
             if len(product_urls) != len(product_titles):
                 raise Exception('mismatched product indices')
             self.log('scraped {} products'.format(len(product_urls)))
+            #print
             for i in range(0, len(product_urls)):
-                # self.log('{}'.format(product_titles[i]))
+                #self.log('{}'.format(product_titles[i]))
                 product_objects.append(Product(product_titles[i], product_urls[i]))
+            #print
             return product_objects
         elif self.c['product_scrape_method'] == 'json':
             self.log('fetching product list (json method)')
@@ -397,6 +405,10 @@ class Shopify(threading.Thread):
                 self.log('found matching variant - {}'.format(var.id))
                 selected_variant = var
         while selected_variant is None:
+            # if theres only one variant, choose it
+            if len(variant_list) == 1:
+                selected_variant = variant_list[0]
+                break
             # if a match isnt found, have the user select the size manually
             self.log('couldnt match variant against selected size, please pick numerically\n')
             i = 0
@@ -656,21 +668,14 @@ class Shopify(threading.Thread):
                 checkout_url = self.open_checkout(checkout_url)
                 checkout_url = self.submit_customer_info(checkout_url)
             except requests.exceptions.MissingSchema:
-                raise Exception('error: a request was passed a null url', slack=True)
+                raise Exception('error: a request was passed a null url')
             # wait for timer
             self.log('waiting for drop time {}...'.format(self.c['drop_timer']), slack=True)
             while True:
-                # TODO: remove all this shit because you cant solve captcha before last ATC time
-                if self.captcha_task:
-                    if datetime.datetime.now().strftime('%H:%M:%S') >= self.c['cap_harvest_time']:
-                        self.log('starting captcha harvest', slack=True)
-                        # TODO: start a captcha thread(s) here
-                        self.cap_response = self.get_captcha_token(self.sitekey, checkout_url)
-                        self.log('got captcha response, waiting for drop time', slack=True)
                 if datetime.datetime.now().strftime('%H:%M:%S') >= self.c['drop_timer']:
                     self.log('drop timer passed. continuing with checkout', slack=True)
                     break
-                sleep(1)
+                sleep(0.2)
             # find the actual product
             while True:
                 product_list = self.get_products()
