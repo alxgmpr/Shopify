@@ -1,3 +1,7 @@
+## *Note: Likely Deprecated*
+
+I've decided to make this repo public. It is extremely unlikely that it works still. This was a different era of Shopify botting; I'm just showing off for nostalgic purposes.
+
 # Shopify
 
 Shopify ATC. Full checkout with captcha/queue bypass. Built by Alex++.
